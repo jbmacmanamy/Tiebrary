@@ -335,7 +335,7 @@
 
 <script>
 /* ============================================================
-   ====================    ==============================
+   ====================  CONFIG  ==============================
    Paste your Supabase project values here (see SETUP.md).
    Until you do, the app runs in local PREVIEW mode so you can
    see how it looks — preview data is NOT shared with friends.
@@ -352,8 +352,16 @@ const isConfigured =
   CONFIG.SUPABASE_ANON_KEY && !CONFIG.SUPABASE_ANON_KEY.includes("YOUR_");
 
 let sb = null;
+let initError = "";
 if (isConfigured) {
-  sb = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+  if (!window.supabase || !window.supabase.createClient) {
+    initError = "The Supabase library didn't load — the CDN script (jsdelivr) may be blocked by an ad blocker, privacy extension, or network. Try another browser or an incognito window with extensions off.";
+  } else if (!/^https:\/\//i.test(CONFIG.SUPABASE_URL)) {
+    initError = "Your SUPABASE_URL must start with https://  — an http:// (or scheme-less) URL is blocked on secure pages like GitHub Pages (mixed-content), even though it works from a local file.";
+  } else {
+    try { sb = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY); }
+    catch(e){ initError = "Could not start the Supabase client: " + (e && e.message ? e.message : e); }
+  }
 }
 
 /* ---- Local preview store (used only when not configured) ---- */
@@ -384,11 +392,20 @@ let ACTIVE = {}; // book_id -> checkout
 
 async function loadData(){
   if (isConfigured){
-    const [{data:books,error:be},{data:cos,error:ce}] = await Promise.all([
-      sb.from("books").select("*").order("title"),
-      sb.from("checkouts").select("*").is("returned_at", null)
-    ]);
-    if (be || ce){ toast("Could not load library. Check setup."); console.error(be||ce); BOOKS=[]; ACTIVE={}; return; }
+    if (!sb){ showLoadError({message: initError||"Supabase client not initialized."}); BOOKS=[]; ACTIVE={}; return; }
+    let books, cos, be, ce;
+    try {
+      const r = await Promise.all([
+        sb.from("books").select("*").order("title"),
+        sb.from("checkouts").select("*").is("returned_at", null)
+      ]);
+      books = r[0].data; be = r[0].error;
+      cos   = r[1].data; ce = r[1].error;
+    } catch(netErr){
+      showLoadError({message:"Network request failed — the browser couldn't reach Supabase. Usually a wrong SUPABASE_URL, an http:// URL on an https page, or a blocker. Details: "+(netErr&&netErr.message?netErr.message:netErr)});
+      BOOKS=[]; ACTIVE={}; return;
+    }
+    if (be || ce){ const e=be||ce; console.error(e); showLoadError(e); BOOKS=[]; ACTIVE={}; return; }
     BOOKS = books || [];
     ACTIVE = {};
     (cos||[]).forEach(c=>{ ACTIVE[c.book_id]=c; });
@@ -684,6 +701,17 @@ function toast(msg){
 }
 
 /* Banner */
+function showLoadError(e){
+  const msg = e && (e.message||e.error_description||e.hint||e.details) ? (e.message||e.error_description||e.hint||e.details) : "Unknown error";
+  const code = e && (e.code||e.status) ? ` (code ${e.code||e.status})` : "";
+  toast("Could not load library.");
+  $("banner").innerHTML = `<div class="banner warn"><b>Couldn't load the library${esc(code)}.</b> ${esc(msg)}
+    <br><br><b>Checklist:</b> (1) <code>SUPABASE_URL</code> starts with <code>https://</code>;
+    (2) you ran <code>schema.sql</code> — it creates the access policies, without them reads are blocked;
+    (3) the live page actually has your real keys — open it, View Source, search <code>SUPABASE_URL</code>;
+    (4) hard-refresh (Cmd/Ctrl+Shift+R) since GitHub Pages can serve an old copy for a minute.
+    Open the browser developer console (F12 &rarr; Console/Network) for the exact error.</div>`;
+}
 function showBanner(){
   const el=$("banner");
   if(!isConfigured){
