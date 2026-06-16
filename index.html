@@ -170,6 +170,47 @@
     font-style:italic;font-size:18px;
   }
 
+  /* ---------- Card hover + overdue ---------- */
+  .card{transition:transform .14s ease, box-shadow .14s ease;}
+  .card:hover{transform:translateY(-3px);box-shadow:0 8px 20px var(--shadow);}
+  .card .hdr.overdue{background:#9B1B0E;}
+  .checkout-line.overdue{color:#9B1B0E;}
+  .checkout-line.overdue b{color:#9B1B0E;}
+  .due-flag{
+    display:inline-block;font-family:"Courier Prime",monospace;font-weight:700;
+    font-size:9px;letter-spacing:1px;text-transform:uppercase;
+    background:#9B1B0E;color:#fff;border-radius:3px;padding:2px 6px;margin-left:6px;
+  }
+
+  /* ---------- Search field wrapper (clear button) ---------- */
+  .search-wrap{position:relative;flex:1 1 240px;min-width:180px;display:flex;}
+  .search-wrap input[type=text]{flex:1 1 auto;padding-right:34px;}
+  .search-clear{
+    position:absolute;right:6px;top:50%;transform:translateY(-50%);
+    border:none;background:transparent;color:var(--muted);cursor:pointer;
+    font-size:20px;line-height:1;padding:2px 6px;display:none;border-radius:50%;
+  }
+  .search-clear:hover{color:var(--rust);}
+  .search-wrap.has-text .search-clear{display:block;}
+
+  /* ---------- Result count ---------- */
+  .result-count{
+    font-family:"Courier Prime",monospace;font-size:11px;letter-spacing:1.5px;
+    text-transform:uppercase;color:var(--muted);margin:0 0 12px 2px;
+  }
+
+  /* ---------- Loading skeleton ---------- */
+  .skeleton-card{
+    background:var(--paper);border:1px solid var(--paper-edge);border-radius:7px;
+    box-shadow:0 3px 9px var(--shadow);height:190px;overflow:hidden;position:relative;
+  }
+  .skeleton-card::after{
+    content:"";position:absolute;inset:0;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);
+    transform:translateX(-100%);animation:shimmer 1.3s infinite;
+  }
+  @keyframes shimmer{100%{transform:translateX(100%);}}
+
   /* ---------- Modal ---------- */
   .overlay{
     position:fixed;inset:0;background:rgba(44,32,23,.55);
@@ -209,6 +250,18 @@
     box-shadow:0 8px 24px rgba(0,0,0,.3);opacity:0;transition:.3s;z-index:80;pointer-events:none;
   }
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* ---------- Mobile ---------- */
+  @media (max-width:560px){
+    body{font-size:17px;}
+    .masthead-inner{padding:18px 16px;}
+    main{padding:16px;}
+    .stat{flex:1 1 100px;padding:12px;}
+    .stat .n{font-size:24px;}
+    .grid{grid-template-columns:1fr;}
+    .toolbar{padding:10px;}
+    .modal{padding:18px;}
+  }
 </style>
 </head>
 <body>
@@ -248,26 +301,34 @@
     <div class="stat"><div class="n" id="statTotal">0</div><div class="l">Volumes</div></div>
     <div class="stat"><div class="n" id="statAvail">0</div><div class="l">On the shelf</div></div>
     <div class="stat"><div class="n" id="statOut">0</div><div class="l">Checked out</div></div>
+    <div class="stat"><div class="n" id="statOverdue">0</div><div class="l">Overdue</div></div>
   </div>
 
   <div class="toolbar">
-    <input type="text" id="search" placeholder="Search title or author..." />
+    <span class="search-wrap" id="searchWrap">
+      <input type="text" id="search" placeholder="Search title, author, genre, notes..." />
+      <button class="search-clear" id="searchClear" title="Clear search" aria-label="Clear search">&times;</button>
+    </span>
     <select id="statusFilter">
       <option value="all">All books</option>
       <option value="available">Available only</option>
       <option value="out">Checked out only</option>
+      <option value="overdue">Overdue only</option>
     </select>
     <select id="genreFilter"><option value="">All genres</option></select>
     <select id="sortBy">
       <option value="title">Sort: Title</option>
       <option value="author">Sort: Author</option>
       <option value="recent">Sort: Recently added</option>
+      <option value="year_new">Sort: Year (newest)</option>
+      <option value="year_old">Sort: Year (oldest)</option>
     </select>
     <span class="grow"></span>
     <button class="btn olive owner-only" id="addBtn">+ Add book</button>
     <button class="btn ghost owner-only" id="importBtn">Import CSV</button>
   </div>
 
+  <div class="result-count" id="resultCount"></div>
   <div class="grid" id="grid"></div>
   <div class="empty" id="emptyState" style="display:none;">No books match your search yet.</div>
 </main>
@@ -280,7 +341,7 @@
 <div class="overlay" id="bookOverlay">
   <div class="modal">
     <h2 id="bookModalTitle">Add a book</h2>
-    <p class="hint">Add a volume to the collection.</p>
+    <p class="hint" id="bookModalHint">Add a volume to the collection.</p>
     <div class="field"><label>Title *</label><input id="f_title" type="text" /></div>
     <div class="field"><label>Author</label><input id="f_author" type="text" /></div>
     <div class="field"><label>Genre</label><input id="f_genre" type="text" placeholder="e.g. Fiction, Design, History" /></div>
@@ -420,6 +481,19 @@ async function addBook(b){
   return true;
 }
 
+async function updateBook(id, b){
+  if (isConfigured){
+    const {error} = await sb.from("books").update(b).eq("id", id);
+    if (error){ toast("Save failed."); console.error(error); return false; }
+  } else {
+    const s=previewLoad();
+    const bk=s.books.find(x=>x.id===id);
+    if(bk) Object.assign(bk,b);
+    previewSave(s);
+  }
+  return true;
+}
+
 async function addBooksBulk(arr){
   if(!arr.length) return 0;
   if (isConfigured){
@@ -479,6 +553,13 @@ async function deleteBook(bookId){
 const $ = id => document.getElementById(id);
 function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); if(isNaN(dt)) return esc(d); return dt.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}); }
+function isOverdue(co){
+  if(!co || !co.due_date) return false;
+  const due=new Date(co.due_date); if(isNaN(due)) return false;
+  const today=new Date(); today.setHours(0,0,0,0);
+  due.setHours(0,0,0,0);
+  return due < today;
+}
 
 function refreshGenreFilter(){
   const sel=$("genreFilter"); const cur=sel.value;
@@ -494,12 +575,14 @@ function render(){
   const sort=$("sortBy").value;
 
   let list = BOOKS.filter(b=>{
-    const out = !!ACTIVE[b.id];
+    const co = ACTIVE[b.id];
+    const out = !!co;
     if(sf==="available" && out) return false;
     if(sf==="out" && !out) return false;
+    if(sf==="overdue" && !isOverdue(co)) return false;
     if(gf && b.genre!==gf) return false;
     if(q){
-      const hay=((b.title||"")+" "+(b.author||"")).toLowerCase();
+      const hay=((b.title||"")+" "+(b.author||"")+" "+(b.genre||"")+" "+(b.notes||"")).toLowerCase();
       if(!hay.includes(q)) return false;
     }
     return true;
@@ -508,24 +591,30 @@ function render(){
   list.sort((a,b)=>{
     if(sort==="author") return (a.author||"").localeCompare(b.author||"")||(a.title||"").localeCompare(b.title||"");
     if(sort==="recent") return String(b.created_at||"").localeCompare(String(a.created_at||""));
+    if(sort==="year_new") return (b.year||-Infinity)-(a.year||-Infinity)||(a.title||"").localeCompare(b.title||"");
+    if(sort==="year_old") return (a.year||Infinity)-(b.year||Infinity)||(a.title||"").localeCompare(b.title||"");
     return (a.title||"").localeCompare(b.title||"");
   });
 
-  const total=BOOKS.length, out=Object.keys(ACTIVE).filter(id=>BOOKS.some(b=>b.id===id)).length;
+  const activeIds=Object.keys(ACTIVE).filter(id=>BOOKS.some(b=>b.id===id));
+  const total=BOOKS.length, out=activeIds.length;
+  const overdue=activeIds.filter(id=>isOverdue(ACTIVE[id])).length;
   $("statTotal").textContent=total;
   $("statOut").textContent=out;
   $("statAvail").textContent=total-out;
+  $("statOverdue").textContent=overdue;
 
   const grid=$("grid");
   grid.innerHTML = list.map(b=>{
     const co=ACTIVE[b.id];
     const out=!!co;
+    const over=isOverdue(co);
     const metaBits=[];
     if(b.genre) metaBits.push(`<span>${esc(b.genre)}</span>`);
     if(b.year) metaBits.push(`<span>${esc(b.year)}</span>`);
     return `<div class="card">
-      <div class="hdr ${out?'out':''}">
-        <span>${out?'&#9632; Checked out':'&#9633; Available'}</span>
+      <div class="hdr ${over?'overdue':(out?'out':'')}">
+        <span>${out?(over?'&#9632; Overdue':'&#9632; Checked out'):'&#9633; Available'}</span>
         <span class="stamp">${out?'OUT':'IN'}</span>
       </div>
       <div class="body">
@@ -533,18 +622,25 @@ function render(){
         <div class="author">${b.author?('by '+esc(b.author)):'<span style="color:var(--muted)">Unknown author</span>'}</div>
         ${metaBits.length?`<div class="meta">${metaBits.join("")}</div>`:""}
         ${b.notes?`<div class="notes">${esc(b.notes)}</div>`:""}
-        ${out?`<div class="checkout-line">Out with <b>${esc(co.borrower)}</b> since ${fmtDate(co.checked_out_at)}${co.due_date?` &middot; due ${fmtDate(co.due_date)}`:""}</div>`:""}
+        ${out?`<div class="checkout-line ${over?'overdue':''}">Out with <b>${esc(co.borrower)}</b> since ${fmtDate(co.checked_out_at)}${co.due_date?` &middot; due ${fmtDate(co.due_date)}`:""}${over?'<span class="due-flag">Overdue</span>':""}</div>`:""}
       </div>
       <div class="foot">
         ${out
           ? `<button class="btn olive" data-checkin="${esc(b.id)}">Check back in</button>`
           : `<button class="btn" data-checkout="${esc(b.id)}">Check out</button>`}
+        <button class="btn ghost owner-only" data-edit="${esc(b.id)}">Edit</button>
         <button class="btn danger owner-only" data-delete="${esc(b.id)}">Remove</button>
       </div>
     </div>`;
   }).join("");
 
-  $("emptyState").style.display = list.length?"none":"block";
+  const hasFilters = q || sf!=="all" || gf;
+  $("resultCount").textContent = total===0 ? "" :
+    `Showing ${list.length} of ${total} ${total===1?'volume':'volumes'}${hasFilters?' (filtered)':''}`;
+  const empty=$("emptyState");
+  empty.style.display = list.length?"none":"block";
+  empty.textContent = total===0 ? "The shelves are empty — add a book to begin."
+                                 : "No books match your search yet.";
 }
 
 /* ---------------- Modals ---------------- */
@@ -555,23 +651,48 @@ document.querySelectorAll(".overlay").forEach(ov=>{
   ov.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",()=>closeOverlay(ov)));
 });
 
-/* Add book */
+/* Add / edit book */
+let editingId=null;
 $("addBtn").addEventListener("click",()=>{
+  editingId=null;
   ["f_title","f_author","f_genre","f_year","f_notes"].forEach(i=>$(i).value="");
+  $("bookModalTitle").textContent="Add a book";
+  $("bookModalHint").textContent="Add a volume to the collection.";
+  $("saveBookBtn").textContent="Save book";
   openOverlay("bookOverlay");
   setTimeout(()=>$("f_title").focus(),50);
 });
+function startEdit(id){
+  const b=BOOKS.find(x=>x.id===id);
+  if(!b) return;
+  editingId=id;
+  $("f_title").value=b.title||"";
+  $("f_author").value=b.author||"";
+  $("f_genre").value=b.genre||"";
+  $("f_year").value=b.year||"";
+  $("f_notes").value=b.notes||"";
+  $("bookModalTitle").textContent="Edit book";
+  $("bookModalHint").textContent="Update the details for this volume.";
+  $("saveBookBtn").textContent="Save changes";
+  openOverlay("bookOverlay");
+  setTimeout(()=>$("f_title").focus(),50);
+}
 $("saveBookBtn").addEventListener("click",async()=>{
   const title=$("f_title").value.trim();
   if(!title){ toast("A title is required."); return; }
   const yr=parseInt($("f_year").value,10);
-  const ok=await addBook({
+  const data={
     title, author:$("f_author").value.trim()||null,
     genre:$("f_genre").value.trim()||null,
     year:isNaN(yr)?null:yr,
     notes:$("f_notes").value.trim()||null
-  });
-  if(ok){ closeOverlay($("bookOverlay")); await loadData(); refreshGenreFilter(); render(); toast("Book added to the shelf."); }
+  };
+  const ok = editingId ? await updateBook(editingId, data) : await addBook(data);
+  if(ok){
+    const wasEdit=!!editingId; editingId=null;
+    closeOverlay($("bookOverlay")); await loadData(); refreshGenreFilter(); render();
+    toast(wasEdit?"Changes saved.":"Book added to the shelf.");
+  }
 });
 
 /* Checkout */
@@ -652,6 +773,8 @@ $("grid").addEventListener("click",async e=>{
   const co=e.target.closest("[data-checkout]");
   const ci=e.target.closest("[data-checkin]");
   const dl=e.target.closest("[data-delete]");
+  const ed=e.target.closest("[data-edit]");
+  if(ed){ startEdit(ed.getAttribute("data-edit")); return; }
   if(co){ startCheckout(co.getAttribute("data-checkout")); }
   else if(ci){
     if(await checkIn(ci.getAttribute("data-checkin"))){ await loadData(); render(); toast("Welcome home, book."); }
@@ -686,6 +809,20 @@ ownerBtn.addEventListener("click",()=>{
   $(id).addEventListener("change",render);
 });
 
+/* Search clear button */
+function syncSearchClear(){ $("searchWrap").classList.toggle("has-text", !!$("search").value); }
+$("search").addEventListener("input",syncSearchClear);
+$("searchClear").addEventListener("click",()=>{
+  $("search").value=""; syncSearchClear(); render(); $("search").focus();
+});
+
+/* Escape closes any open modal */
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){
+    document.querySelectorAll(".overlay.show").forEach(ov=>closeOverlay(ov));
+  }
+});
+
 /* Toast */
 let toastTimer=null;
 function toast(msg){
@@ -716,8 +853,12 @@ function showBanner(){
 }
 
 /* Init */
+function showSkeleton(){
+  $("grid").innerHTML = Array.from({length:6}).map(()=>'<div class="skeleton-card"></div>').join("");
+}
 (async function init(){
   showBanner();
+  showSkeleton();
   await loadData();
   refreshGenreFilter();
   render();
